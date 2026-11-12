@@ -24,6 +24,7 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final AuthenticationManager authenticationManager;
+    private final GmailApiService gmailApiService;
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
@@ -54,6 +55,13 @@ public class AuthService {
 
         User savedUser = userRepository.save(user);
         String token = jwtService.generateToken(savedUser);
+
+        // Envío formal de correo de registro exitoso mediante Gmail API (HTTPS 443 para Render)
+        try {
+            gmailApiService.sendWelcomeEmail(savedUser.getEmail(), savedUser.getFirstName());
+        } catch (Exception e) {
+            // No bloquear el registro si el despacho del correo falló
+        }
 
         return AuthResponse.builder()
                 .success(true)
