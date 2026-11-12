@@ -55,7 +55,7 @@ public class UserController {
         String oldPass = body.get("oldPassword");
         String newPass = body.get("newPassword");
 
-        if (email == null || oldPass == null || newPass == null) {
+        if (email == null || newPass == null || newPass.isBlank()) {
             return ResponseEntity.badRequest().body(Map.of("message", "Parámetros incompletos"));
         }
 
@@ -84,10 +84,22 @@ public class UserController {
     }
 
     @PutMapping({"/admin/users/{id}/status", "/api/admin/users/{id}/status"})
-    public ResponseEntity<?> updateUserStatus(@PathVariable Long id, @RequestBody Map<String, Boolean> body) {
-        Boolean active = body.get("active");
+    public ResponseEntity<?> updateUserStatus(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        boolean active = true;
+        if (body.containsKey("active")) {
+            Object a = body.get("active");
+            if (a instanceof Boolean) {
+                active = (Boolean) a;
+            } else if (a != null) {
+                active = Boolean.parseBoolean(a.toString());
+            }
+        } else if (body.containsKey("status")) {
+            String s = String.valueOf(body.get("status"));
+            active = "ACTIVE".equalsIgnoreCase(s);
+        }
+
         try {
-            return ResponseEntity.ok(userService.updateUserStatus(id, Boolean.TRUE.equals(active)));
+            return ResponseEntity.ok(userService.updateUserStatus(id, active));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }

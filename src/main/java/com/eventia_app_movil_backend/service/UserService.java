@@ -56,6 +56,16 @@ public class UserService {
         if (update.getPhoneNumber() != null) {
             user.setCellphone(update.getPhoneNumber());
         }
+        if (update.getDocumentNumber() != null && !update.getDocumentNumber().isBlank()) {
+            user.setDni(update.getDocumentNumber());
+        }
+        if (update.getEmail() != null && !update.getEmail().isBlank() && !update.getEmail().equalsIgnoreCase(email)) {
+            String newEmail = update.getEmail().trim().toLowerCase();
+            if (userRepository.findByEmail(newEmail).isPresent()) {
+                throw new IllegalArgumentException("El correo ya se encuentra registrado por otro usuario.");
+            }
+            user.setEmail(newEmail);
+        }
 
         return mapToDTO(userRepository.save(user));
     }
@@ -65,8 +75,10 @@ public class UserService {
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new IllegalArgumentException("Usuario no encontrado"));
 
-        if (!passwordEncoder.matches(oldPassword, user.getPassword())) {
-            throw new IllegalArgumentException("La contraseña actual es incorrecta.");
+        if (oldPassword != null && !oldPassword.isBlank()) {
+            if (!passwordEncoder.matches(oldPassword, user.getPassword())) {
+                throw new IllegalArgumentException("La contraseña actual es incorrecta.");
+            }
         }
 
         user.setPassword(passwordEncoder.encode(newPassword));
@@ -107,6 +119,7 @@ public class UserService {
                 .phoneNumber(user.getCellphone())
                 .role(user.getRole().name())
                 .status(user.isActive() ? "ACTIVE" : "INACTIVE")
+                .createdAt(user.getCreatedAt())
                 .build();
     }
 }

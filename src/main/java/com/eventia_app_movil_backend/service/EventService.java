@@ -15,6 +15,8 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Service
@@ -54,15 +56,17 @@ public class EventService {
                         () -> new IllegalStateException("No hay un usuario organizador disponible")
                 ));
 
+        String categoryName = dto.getCategoryName() != null ? dto.getCategoryName() : dto.getCategory();
+
         Category category;
         if (dto.getCategoryId() != null) {
             category = categoryRepository.findById(dto.getCategoryId())
                     .orElseThrow(() -> new IllegalArgumentException("Categoría no encontrada con ID: " + dto.getCategoryId()));
-        } else if (dto.getCategoryName() != null) {
-            category = categoryRepository.findByNameIgnoreCase(dto.getCategoryName())
+        } else if (categoryName != null && !categoryName.isBlank()) {
+            category = categoryRepository.findByNameIgnoreCase(categoryName)
                     .orElseGet(() -> categoryRepository.save(Category.builder()
-                            .name(dto.getCategoryName())
-                            .description(dto.getCategoryName())
+                            .name(categoryName)
+                            .description(categoryName)
                             .active(true)
                             .build()));
         } else {
@@ -74,15 +78,29 @@ public class EventService {
                             .build()));
         }
 
+        LocalTime startTime = dto.getStartTime();
+        if (startTime == null && dto.getTime() != null && !dto.getTime().isBlank()) {
+            try {
+                startTime = LocalTime.parse(dto.getTime().trim());
+            } catch (Exception ignored) {
+                startTime = LocalTime.of(20, 0);
+            }
+        }
+        if (startTime == null) {
+            startTime = LocalTime.of(20, 0);
+        }
+
+        String location = dto.getLocation() != null ? dto.getLocation() : (dto.getVenue() != null ? dto.getVenue() : "Lima, Perú");
+
         Event event = Event.builder()
                 .title(dto.getTitle())
                 .description(dto.getDescription())
-                .bannerUrl(dto.getBannerUrl() != null ? dto.getBannerUrl() : dto.getImageUrl())
+                .bannerUrl(dto.getBannerUrl() != null ? dto.getBannerUrl() : (dto.getImageUrl() != null ? dto.getImageUrl() : "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?q=80&w=1200"))
                 .capacity(dto.getCapacity() != null ? dto.getCapacity() : 1000)
                 .date(dto.getDate() != null ? dto.getDate() : LocalDate.now().plusDays(30))
-                .startTime(dto.getStartTime() != null ? dto.getStartTime() : LocalTime.of(20, 0))
-                .endTime(dto.getEndTime() != null ? dto.getEndTime() : LocalTime.of(23, 0))
-                .location(dto.getLocation() != null ? dto.getLocation() : "Lima, Perú")
+                .startTime(startTime)
+                .endTime(dto.getEndTime() != null ? dto.getEndTime() : startTime.plusHours(3))
+                .location(location)
                 .status(EventStatus.PUBLISHED)
                 .active(true)
                 .category(category)
@@ -91,15 +109,24 @@ public class EventService {
 
         Event savedEvent = eventRepository.save(event);
 
-        // Crear tipos de entrada por defecto si no vinieron
+        List<TicketTypeDTO> inputTickets = (dto.getTicketTypes() != null && !dto.getTicketTypes().isEmpty())
+                ? dto.getTicketTypes()
+                : dto.getTickets();
+
         List<TicketType> ticketTypes = new ArrayList<>();
-        if (dto.getTicketTypes() != null && !dto.getTicketTypes().isEmpty()) {
-            for (TicketTypeDTO tDto : dto.getTicketTypes()) {
+        if (inputTickets != null && !inputTickets.isEmpty()) {
+            int calculatedCapacity = 0;
+            for (TicketTypeDTO tDto : inputTickets) {
+                int cap = tDto.getAvailable() != null ? tDto.getAvailable() :
+                        (tDto.getAvailableCapacity() != null ? tDto.getAvailableCapacity() :
+                                (tDto.getTotalCapacity() != null ? tDto.getTotalCapacity() : 100));
+                calculatedCapacity += cap;
+
                 TicketType tt = TicketType.builder()
-                        .name(tDto.getName())
-                        .price(tDto.getPrice())
-                        .totalCapacity(tDto.getTotalCapacity() != null ? tDto.getTotalCapacity() : 500)
-                        .availableCapacity(tDto.getAvailableCapacity() != null ? tDto.getAvailableCapacity() : 500)
+                        .name(tDto.getName() != null ? tDto.getName() : "General")
+                        .price(tDto.getPrice() != null ? tDto.getPrice() : 50.0)
+                        .totalCapacity(cap)
+                        .availableCapacity(cap)
                         .zone(tDto.getZone() != null ? tDto.getZone() : tDto.getName())
                         .isPresale(Boolean.TRUE.equals(tDto.getIsPresale()))
                         .maxPerPurchase(tDto.getMaxPerPurchase() != null ? tDto.getMaxPerPurchase() : 10)
@@ -108,6 +135,8 @@ public class EventService {
                         .build();
                 ticketTypes.add(ticketTypeRepository.save(tt));
             }
+            savedEvent.setCapacity(calculatedCapacity);
+            savedEvent = eventRepository.save(savedEvent);
         } else {
             // Standard Eventia ticket types: General, VIP, VIP+
             ticketTypes.add(ticketTypeRepository.save(TicketType.builder()
@@ -151,29 +180,125 @@ public class EventService {
         Event event = eventRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Evento no encontrado con ID: " + id));
 
+        // REGLA: Si el evento ya cuenta con entradas vendidas, no se puede modificar
+        boolean hasSold = false;
+        if (event.getTicketTypes() != null) {
+            for (TicketType tt : event.getTicketTypes()) {
+                if (tt.getAvailableCapacity() != null && tt.getTotalCapacity() != null &&
+                        tt.getAvailableCapacity() < tt.getTotalCapacity()) {
+                    hasSold = true;
+                    break;
+                }
+            }
+        }
+        if (hasSold) {
+            throw new IllegalStateException("El evento ya cuenta con entradas vendidas y no puede ser modificado por seguridad y cumplimiento con los compradores.");
+        }
+
         if (dto.getTitle() != null) event.setTitle(dto.getTitle());
         if (dto.getDescription() != null) event.setDescription(dto.getDescription());
         if (dto.getLocation() != null) event.setLocation(dto.getLocation());
+        else if (dto.getVenue() != null) event.setLocation(dto.getVenue());
+
         if (dto.getDate() != null) event.setDate(dto.getDate());
         if (dto.getStartTime() != null) event.setStartTime(dto.getStartTime());
+        else if (dto.getTime() != null) {
+            try {
+                event.setStartTime(LocalTime.parse(dto.getTime().trim()));
+            } catch (Exception ignored) {}
+        }
         if (dto.getEndTime() != null) event.setEndTime(dto.getEndTime());
-        if (dto.getCapacity() != null) event.setCapacity(dto.getCapacity());
         if (dto.getBannerUrl() != null) event.setBannerUrl(dto.getBannerUrl());
         else if (dto.getImageUrl() != null) event.setBannerUrl(dto.getImageUrl());
 
+        String catName = dto.getCategoryName() != null ? dto.getCategoryName() : dto.getCategory();
         if (dto.getCategoryId() != null) {
             Category category = categoryRepository.findById(dto.getCategoryId())
                     .orElseThrow(() -> new IllegalArgumentException("Categoría no encontrada con ID: " + dto.getCategoryId()));
             event.setCategory(category);
+        } else if (catName != null) {
+            Category category = categoryRepository.findByNameIgnoreCase(catName)
+                    .orElseGet(() -> categoryRepository.save(Category.builder().name(catName).description(catName).active(true).build()));
+            event.setCategory(category);
         }
 
-        return mapToEventDTO(eventRepository.save(event));
+        // Actualizar tickets/tarifas individuales del evento en MySQL
+        List<TicketTypeDTO> inputTickets = (dto.getTicketTypes() != null && !dto.getTicketTypes().isEmpty())
+                ? dto.getTicketTypes()
+                : dto.getTickets();
+
+        if (inputTickets != null && !inputTickets.isEmpty()) {
+            int calculatedCapacity = 0;
+            List<TicketType> existingTickets = event.getTicketTypes() != null ? event.getTicketTypes() : new ArrayList<>();
+
+            for (TicketTypeDTO tDto : inputTickets) {
+                int cap = tDto.getAvailable() != null ? tDto.getAvailable() :
+                        (tDto.getAvailableCapacity() != null ? tDto.getAvailableCapacity() :
+                                (tDto.getTotalCapacity() != null ? tDto.getTotalCapacity() : 100));
+                double price = tDto.getPrice() != null ? tDto.getPrice() : 50.0;
+                String name = tDto.getName() != null ? tDto.getName().trim() : "General";
+
+                calculatedCapacity += cap;
+
+                // Buscar ticket existente por ID o por coincidencia de nombre
+                Optional<TicketType> existingOpt = existingTickets.stream()
+                        .filter(tt -> (tDto.getId() != null && tDto.getId().equals(tt.getId())) ||
+                                name.equalsIgnoreCase(tt.getName()) ||
+                                (name.contains("+") && tt.getName().contains("+")) ||
+                                (name.equalsIgnoreCase("VIP") && tt.getName().equalsIgnoreCase("VIP")))
+                        .findFirst();
+
+                if (existingOpt.isPresent()) {
+                    TicketType tt = existingOpt.get();
+                    tt.setPrice(price);
+                    tt.setTotalCapacity(cap);
+                    tt.setAvailableCapacity(cap);
+                    if (tDto.getZone() != null) tt.setZone(tDto.getZone());
+                    ticketTypeRepository.save(tt);
+                } else {
+                    TicketType newTt = TicketType.builder()
+                            .name(name)
+                            .price(price)
+                            .totalCapacity(cap)
+                            .availableCapacity(cap)
+                            .zone(tDto.getZone() != null ? tDto.getZone() : name)
+                            .isPresale(Boolean.TRUE.equals(tDto.getIsPresale()))
+                            .maxPerPurchase(tDto.getMaxPerPurchase() != null ? tDto.getMaxPerPurchase() : 10)
+                            .active(true)
+                            .event(event)
+                            .build();
+                    ticketTypeRepository.save(newTt);
+                }
+            }
+            event.setCapacity(calculatedCapacity);
+        } else if (dto.getCapacity() != null) {
+            event.setCapacity(dto.getCapacity());
+        }
+
+        Event saved = eventRepository.save(event);
+        return mapToEventDTO(saved);
     }
 
     @Transactional
     public void deleteEvent(Long id) {
         Event event = eventRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Evento no encontrado con ID: " + id));
+
+        // REGLA: No eliminar si tiene ventas activas
+        boolean hasSold = false;
+        if (event.getTicketTypes() != null) {
+            for (TicketType tt : event.getTicketTypes()) {
+                if (tt.getAvailableCapacity() != null && tt.getTotalCapacity() != null &&
+                        tt.getAvailableCapacity() < tt.getTotalCapacity()) {
+                    hasSold = true;
+                    break;
+                }
+            }
+        }
+        if (hasSold) {
+            throw new IllegalStateException("El evento ya cuenta con entradas vendidas y no puede ser eliminado.");
+        }
+
         event.setActive(false);
         eventRepository.save(event);
     }
@@ -185,6 +310,21 @@ public class EventService {
                 .map(this::mapToTicketTypeDTO)
                 .collect(Collectors.toList())
                 : new ArrayList<>();
+
+        int soldCount = 0;
+        double totalRevenue = 0.0;
+        if (event.getTicketTypes() != null) {
+            for (TicketType tt : event.getTicketTypes()) {
+                if (tt.isActive()) {
+                    int total = tt.getTotalCapacity() != null ? tt.getTotalCapacity() : 0;
+                    int avail = tt.getAvailableCapacity() != null ? tt.getAvailableCapacity() : total;
+                    int sold = Math.max(0, total - avail);
+                    soldCount += sold;
+                    totalRevenue += sold * (tt.getPrice() != null ? tt.getPrice() : 0.0);
+                }
+            }
+        }
+        boolean hasSoldTickets = soldCount > 0;
 
         String categoryName = (event.getCategory() != null) ? event.getCategory().getName() : "General";
         String organizerName = (event.getOrganizer() != null) ? event.getOrganizer().getFullName() : "Eventia Oficial";
@@ -209,18 +349,28 @@ public class EventService {
                 .organizer(organizerName)
                 .status(event.getStatus() != null ? event.getStatus().name() : "PUBLISHED")
                 .active(event.isActive())
+                .hasSoldTickets(hasSoldTickets)
+                .soldTicketsCount(soldCount)
+                .totalRevenue(totalRevenue)
                 .ticketTypes(ticketTypeDTOs)
                 .tickets(ticketTypeDTOs)
                 .build();
     }
 
     public TicketTypeDTO mapToTicketTypeDTO(TicketType tt) {
+        int avail = tt.getAvailableCapacity() != null ? tt.getAvailableCapacity() :
+                (tt.getTotalCapacity() != null ? tt.getTotalCapacity() : 0);
+        int total = tt.getTotalCapacity() != null ? tt.getTotalCapacity() : avail;
+
         return TicketTypeDTO.builder()
                 .id(tt.getId())
                 .name(tt.getName())
                 .price(tt.getPrice())
-                .totalCapacity(tt.getTotalCapacity())
-                .availableCapacity(tt.getAvailableCapacity())
+                .totalCapacity(total)
+                .availableCapacity(avail)
+                .available(avail)
+                .total(total)
+                .tier(tt.getName())
                 .zone(tt.getZone())
                 .isPresale(tt.isPresale())
                 .maxPerPurchase(tt.getMaxPerPurchase())
@@ -228,6 +378,103 @@ public class EventService {
                 .saleEndDate(tt.getSaleEndDate())
                 .active(tt.isActive())
                 .build();
+    }
+
+    public Map<String, Object> validateTickets(Long eventId, Map<String, Object> payload) {
+        Event event = eventRepository.findById(eventId).orElse(null);
+        if (event == null) {
+            return Map.of(
+                    "valid", false,
+                    "eventId", String.valueOf(eventId),
+                    "subtotal", 0.0,
+                    "totalTickets", 0,
+                    "message", "Evento no encontrado."
+            );
+        }
+
+        Object itemsObj = payload.get("items");
+        if (!(itemsObj instanceof List<?> itemsList) || itemsList.isEmpty()) {
+            return Map.of(
+                    "valid", false,
+                    "eventId", String.valueOf(eventId),
+                    "subtotal", 0.0,
+                    "totalTickets", 0,
+                    "message", "No se especificaron entradas para validar."
+            );
+        }
+
+        double subtotal = 0.0;
+        int totalTickets = 0;
+        List<TicketType> eventTickets = event.getTicketTypes() != null ? event.getTicketTypes() : List.of();
+
+        for (Object itemObj : itemsList) {
+            if (itemObj instanceof Map<?, ?> itemMap) {
+                String ticketIdStr = String.valueOf(itemMap.get("ticketId"));
+                int quantity = 0;
+                Object qObj = itemMap.get("quantity");
+                if (qObj instanceof Number num) {
+                    quantity = num.intValue();
+                } else if (qObj != null) {
+                    try { quantity = Integer.parseInt(qObj.toString()); } catch (Exception ignored) {}
+                }
+
+                if (quantity <= 0) continue;
+
+                TicketType found = null;
+                try {
+                    Long tId = Long.parseLong(ticketIdStr);
+                    found = eventTickets.stream().filter(t -> t.getId().equals(tId)).findFirst().orElse(null);
+                } catch (NumberFormatException ignored) {}
+
+                if (found == null) {
+                    String normId = ticketIdStr.toLowerCase();
+                    found = eventTickets.stream().filter(t -> {
+                        String name = (t.getName() != null ? t.getName() : "").toLowerCase();
+                        if (normId.contains("vip_plus") || normId.contains("vip+") || normId.contains("plus")) return name.contains("+");
+                        if (normId.contains("vip")) return name.contains("vip") && !name.contains("+");
+                        if (normId.contains("general")) return name.contains("general");
+                        return false;
+                    }).findFirst().orElse(null);
+                }
+
+                if (found == null && !eventTickets.isEmpty()) {
+                    found = eventTickets.get(0);
+                }
+
+                if (found == null) {
+                    return Map.of(
+                            "valid", false,
+                            "eventId", String.valueOf(eventId),
+                            "subtotal", 0.0,
+                            "totalTickets", 0,
+                            "message", "Tipo de entrada no encontrado."
+                    );
+                }
+
+                int available = found.getAvailableCapacity() != null ? found.getAvailableCapacity() : 0;
+                if (quantity > available) {
+                    return Map.of(
+                            "valid", false,
+                            "eventId", String.valueOf(eventId),
+                            "subtotal", 0.0,
+                            "totalTickets", 0,
+                            "message", "No hay suficiente disponibilidad para la entrada: " + found.getName()
+                    );
+                }
+
+                double price = found.getPrice() != null ? found.getPrice() : 0.0;
+                subtotal += price * quantity;
+                totalTickets += quantity;
+            }
+        }
+
+        return Map.of(
+                "valid", true,
+                "eventId", String.valueOf(eventId),
+                "subtotal", subtotal,
+                "totalTickets", totalTickets,
+                "message", "Entradas válidas y disponibles."
+        );
     }
 }
 

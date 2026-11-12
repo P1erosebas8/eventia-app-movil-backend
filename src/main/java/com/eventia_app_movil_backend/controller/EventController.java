@@ -54,9 +54,14 @@ public class EventController {
         try {
             EventDTO updated = eventService.updateEvent(id, dto);
             return ResponseEntity.ok(updated);
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException | IllegalStateException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
+    }
+
+    @PostMapping({"/{id}/validate-tickets", "/api/events/{id}/validate-tickets"})
+    public ResponseEntity<?> validateTickets(@PathVariable Long id, @RequestBody Map<String, Object> payload) {
+        return ResponseEntity.ok(eventService.validateTickets(id, payload));
     }
 
     @DeleteMapping("/{id}")
@@ -64,8 +69,8 @@ public class EventController {
         try {
             eventService.deleteEvent(id);
             return ResponseEntity.ok(Map.of("message", "Evento eliminado/desactivado correctamente"));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.notFound().build();
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 }

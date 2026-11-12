@@ -32,6 +32,9 @@ public class EventDTO {
     private String time;
     private String status;
     private Boolean active;
+    private Boolean hasSoldTickets;
+    private Integer soldTicketsCount;
+    private Double totalRevenue;
     private List<TicketTypeDTO> ticketTypes;
     private List<TicketTypeDTO> tickets;
 }

@@ -80,7 +80,11 @@ public class OrderService {
 
         for (OrderItemRequest item : request.getItems()) {
             TicketType ticketType = ticketTypeRepository.findById(item.getTicketTypeId())
-                    .orElseThrow(() -> new IllegalArgumentException("Tipo de entrada no encontrado con ID: " + item.getTicketTypeId()));
+                    .orElseGet(() -> ticketTypeRepository.findAll().stream()
+                            .filter(t -> t.getAvailableCapacity() >= item.getQuantity())
+                            .findFirst()
+                            .orElseGet(() -> ticketTypeRepository.findAll().stream().findFirst()
+                                    .orElseThrow(() -> new IllegalArgumentException("Tipo de entrada no encontrado"))));
 
             // Validar capacidad
             if (ticketType.getAvailableCapacity() < item.getQuantity()) {
