@@ -17,14 +17,17 @@ import java.util.function.Function;
 @Service
 public class JwtService {
 
-    @Value("${jwt.secret:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}")
+    @Value("${jwt.secret:${JWT_SECRET:}}")
     private String secretKey;
 
     @Value("${jwt.expiration:86400000}") // 24 horas por defecto
     private long jwtExpiration;
 
     private SecretKey getSigningKey() {
-        byte[] keyBytes = secretKey.getBytes(StandardCharsets.UTF_8);
+        String effectiveKey = (secretKey != null && !secretKey.isBlank())
+                ? secretKey.trim()
+                : "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970";
+        byte[] keyBytes = effectiveKey.getBytes(StandardCharsets.UTF_8);
         return Keys.hmacShaKeyFor(keyBytes);
     }
 

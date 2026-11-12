@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -13,26 +14,105 @@ import java.time.Duration;
 import java.util.Base64;
 
 /**
- * Servicio de envío de correos utilizando la API REST de Gmail (vía HTTPS puerto 443).
- * Diseñado especialmente para entornos cloud como Render, donde los puertos tradicionales
+ * Servicio de envío de correos utilizando la API REST de Gmail (vía HTTPS
+ * puerto 443).
+ * Diseñado especialmente para entornos cloud como Render, donde los puertos
+ * tradicionales
  * SMTP (25, 465, 587) están restringidos o bloqueados.
+ *
+ * Soporta autenticación OAuth2 permanente mediante Refresh Token + Client ID +
+ * Client Secret.
  */
 @Slf4j
 @Service
 public class GmailApiService {
 
-    @Value("${eventia.mail.gmail-api-token:}")
+    @Value("${eventia.mail.client-id:${GOOGLE_CLIENT_ID:${EVENTIA_MAIL_CLIENT_ID:}}}")
+    private String clientId;
+
+    @Value("${eventia.mail.client-secret:${GOOGLE_CLIENT_SECRET:${EVENTIA_MAIL_CLIENT_SECRET:}}}")
+    private String clientSecret;
+
+    @Value("${eventia.mail.refresh-token:${GOOGLE_REFRESH_TOKEN:${EVENTIA_MAIL_REFRESH_TOKEN:}}}")
+    private String refreshToken;
+
+    @Value("${eventia.mail.gmail-api-token:${GOOGLE_ACCESS_TOKEN:${EVENTIA_MAIL_GMAIL_API_TOKEN:}}}")
     private String gmailApiToken;
 
-    @Value("${eventia.mail.from:no-reply@eventia.com}")
+    @Value("${eventia.mail.from:${EVENTIA_MAIL_FROM:}}")
     private String fromEmail;
 
     private final HttpClient httpClient;
+    private String cachedAccessToken;
+    private long tokenExpiryEpochMs = 0;
 
     public GmailApiService() {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+    }
+
+    /**
+     * Obtiene un Access Token vigente. Si se cuenta con Refresh Token, Client ID y
+     * Client Secret,
+     * renueva el token automáticamente antes de que expire.
+     */
+    private synchronized String getEffectiveAccessToken() {
+        // 1. Si están configuradas las 3 credenciales OAuth (Client ID, Secret y
+        // Refresh Token)
+        if (refreshToken != null && !refreshToken.isBlank() &&
+                clientId != null && !clientId.isBlank() &&
+                clientSecret != null && !clientSecret.isBlank()) {
+
+            // Reutilizar el access token si aún es válido (con margen de 2 minutos)
+            if (cachedAccessToken != null && System.currentTimeMillis() < tokenExpiryEpochMs) {
+                return cachedAccessToken;
+            }
+
+            try {
+                String formBody = "client_id=" + URLEncoder.encode(clientId.trim(), StandardCharsets.UTF_8) +
+                        "&client_secret=" + URLEncoder.encode(clientSecret.trim(), StandardCharsets.UTF_8) +
+                        "&refresh_token=" + URLEncoder.encode(refreshToken.trim(), StandardCharsets.UTF_8) +
+                        "&grant_type=refresh_token";
+
+                HttpRequest refreshRequest = HttpRequest.newBuilder()
+                        .uri(URI.create("https://oauth2.googleapis.com/token"))
+                        .timeout(Duration.ofSeconds(10))
+                        .header("Content-Type", "application/x-www-form-urlencoded")
+                        .POST(HttpRequest.BodyPublishers.ofString(formBody, StandardCharsets.UTF_8))
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(refreshRequest, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                    String body = response.body();
+                    String tokenMarker = "\"access_token\":";
+                    int idx = body.indexOf(tokenMarker);
+                    if (idx != -1) {
+                        int startQuote = body.indexOf("\"", idx + tokenMarker.length());
+                        int endQuote = body.indexOf("\"", startQuote + 1);
+                        if (startQuote != -1 && endQuote != -1) {
+                            cachedAccessToken = body.substring(startQuote + 1, endQuote);
+                            // Los tokens de Google expiran en 3600 segundos; renovamos cada 50 min
+                            tokenExpiryEpochMs = System.currentTimeMillis() + (3000 * 1000L);
+                            log.info("[GmailApiService] Token de acceso OAuth2 refrescado y activo exitosamente.");
+                            return cachedAccessToken;
+                        }
+                    }
+                } else {
+                    log.error("[GmailApiService] Falló al renovar token OAuth2 (código {}): {}", response.statusCode(),
+                            response.body());
+                }
+            } catch (Exception e) {
+                log.error("[GmailApiService] Error al renovar token OAuth2 de Google: {}", e.getMessage());
+            }
+        }
+
+        // 2. Si se pasó un Access Token estático (temporal)
+        if (gmailApiToken != null && !gmailApiToken.isBlank()) {
+            return gmailApiToken.trim();
+        }
+
+        return null;
     }
 
     /**
@@ -68,8 +148,11 @@ public class GmailApiService {
      */
     public boolean sendEmailViaGmailApi(String toEmail, String subject, String bodyHtml) {
         try {
+            // Si fromEmail está vacío, <me> usa automáticamente la cuenta autenticada de Google
+            String sender = (fromEmail != null && !fromEmail.isBlank()) ? fromEmail.trim() : "me";
+
             // Formatear mensaje conforme al estándar RFC 2822
-            String rfc2822Message = "From: Eventia Live <" + fromEmail + ">\r\n" +
+            String rfc2822Message = "From: Eventia Live <" + sender + ">\r\n" +
                     "To: <" + toEmail + ">\r\n" +
                     "Subject: =?UTF-8?B?" + Base64.getEncoder().encodeToString(subject.getBytes(StandardCharsets.UTF_8)) + "?=\r\n" +
                     "MIME-Version: 1.0\r\n" +
@@ -80,13 +163,15 @@ public class GmailApiService {
             // En la Gmail API el payload RFC 2822 debe ir codificado en Base64 URL-safe (sin padding)
             String encodedRaw = Base64.getUrlEncoder().withoutPadding().encodeToString(rfc2822Message.getBytes(StandardCharsets.UTF_8));
 
-            if (gmailApiToken != null && !gmailApiToken.isBlank()) {
+            String activeToken = getEffectiveAccessToken();
+
+            if (activeToken != null && !activeToken.isBlank()) {
                 String requestJson = "{\"raw\":\"" + encodedRaw + "\"}";
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create("https://gmail.googleapis.com/gmail/v1/users/me/messages/send"))
                         .timeout(Duration.ofSeconds(12))
-                        .header("Authorization", "Bearer " + gmailApiToken)
+                        .header("Authorization", "Bearer " + activeToken)
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(requestJson, StandardCharsets.UTF_8))
                         .build();
@@ -101,7 +186,7 @@ public class GmailApiService {
                 }
             } else {
                 // Modo simulación cloud para desarrollo o despliegue previo a vincular OAuth credentials
-                log.info("[GmailApiService - MOCK/CLOUD HTTPS] Token de Gmail API no provisto. Correo simulado exitosamente a: '{}' (Asunto: '{}')", toEmail, subject);
+                log.info("[GmailApiService - MOCK/CLOUD HTTPS] Credenciales de Gmail API no provistas. Correo simulado exitosamente a: '{}' (Asunto: '{}')", toEmail, subject);
                 return true;
             }
         } catch (Exception e) {
