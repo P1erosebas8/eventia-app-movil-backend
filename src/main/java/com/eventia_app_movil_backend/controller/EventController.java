@@ -64,6 +64,16 @@ public class EventController {
         return ResponseEntity.ok(eventService.validateTickets(id, payload));
     }
 
+    @PatchMapping({"/{id}/visibility", "/api/events/{id}/visibility"})
+    public ResponseEntity<?> toggleVisibility(@PathVariable Long id) {
+        try {
+            EventDTO dto = eventService.toggleVisibility(id);
+            return ResponseEntity.ok(dto);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<?> deleteEvent(@PathVariable Long id) {
         try {

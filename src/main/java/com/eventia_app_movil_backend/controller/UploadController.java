@@ -21,10 +21,14 @@ public class UploadController {
     private final CloudinaryService cloudinaryService;
 
     /**
-     * Endpoint para subida de imágenes (eventos y fotos de perfil) a Cloudinary.
+     * Endpoint flexible para subida de imágenes a Cloudinary:
+     * - Admite multipart/form-data con archivo binario ('file')
+     * - Admite application/json con base64 o data-uri ('image' o 'file')
      */
-    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, Object>> uploadImage(@RequestParam("file") MultipartFile file) {
+    @PostMapping(consumes = {MediaType.MULTIPART_FORM_DATA_VALUE, MediaType.APPLICATION_JSON_VALUE})
+    public ResponseEntity<Map<String, Object>> uploadImage(
+            @RequestParam(value = "file", required = false) MultipartFile file,
+            @RequestBody(required = false) Map<String, String> jsonBody) {
         try {
             if (!cloudinaryService.isConfigured()) {
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of(
@@ -33,7 +37,19 @@ public class UploadController {
                 ));
             }
 
-            String secureUrl = cloudinaryService.uploadImage(file);
+            String secureUrl;
+            if (file != null && !file.isEmpty()) {
+                secureUrl = cloudinaryService.uploadImage(file);
+            } else if (jsonBody != null && (jsonBody.containsKey("image") || jsonBody.containsKey("file"))) {
+                String raw = jsonBody.containsKey("image") ? jsonBody.get("image") : jsonBody.get("file");
+                secureUrl = cloudinaryService.uploadBase64(raw);
+            } else {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "message", "Debes enviar un archivo en multipart o un base64 en JSON ('image'/'file')."
+                ));
+            }
+
             return ResponseEntity.ok(Map.of(
                     "success", true,
                     "url", secureUrl,

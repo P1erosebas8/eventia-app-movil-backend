@@ -303,6 +303,15 @@ public class EventService {
         eventRepository.save(event);
     }
 
+    @Transactional
+    public EventDTO toggleVisibility(Long id) {
+        Event event = eventRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Evento no encontrado con ID: " + id));
+        event.setActive(!event.isActive());
+        Event saved = eventRepository.save(event);
+        return mapToEventDTO(saved);
+    }
+
     public EventDTO mapToEventDTO(Event event) {
         List<TicketTypeDTO> ticketTypeDTOs = (event.getTicketTypes() != null)
                 ? event.getTicketTypes().stream()

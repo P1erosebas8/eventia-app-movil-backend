@@ -91,6 +91,26 @@ public class CloudinaryService {
         return (String) uploadResult.get("secure_url");
     }
 
+    /**
+     * Sube una imagen en formato Base64 o Data URI a Cloudinary.
+     */
+    public String uploadBase64(String base64OrDataUri) throws IOException {
+        if (base64OrDataUri == null || base64OrDataUri.isBlank()) {
+            throw new IllegalArgumentException("La imagen base64 no puede estar vacía.");
+        }
+
+        if (cloudinary == null) {
+            throw new IllegalStateException("Cloudinary no está configurado.");
+        }
+
+        Map<?, ?> uploadResult = cloudinary.uploader().upload(base64OrDataUri, ObjectUtils.asMap(
+                "folder", "eventia",
+                "resource_type", "image"
+        ));
+
+        return (String) uploadResult.get("secure_url");
+    }
+
     public boolean isConfigured() {
         return cloudinary != null;
     }
